@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/client-go/rest"
+
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/signalfx/golib/datapoint"
@@ -55,6 +57,10 @@ type Config struct {
 	// exporter monitor directly since there is no built-in filtering, only
 	// when embedding it in other monitors.
 	SendAllMetrics bool `yaml:"sendAllMetrics"`
+
+	// Uses Kubernetes service account inside the pod to authenticate against
+	// the metrics endpoint.
+	UseKubernetesAuth bool `yaml:"useKubernetesAuth"`
 }
 
 func (c *Config) GetExtraMetrics() []string {
@@ -105,10 +111,19 @@ func (m *Monitor) Configure(conf *Config) error {
 	}
 	url := fmt.Sprintf("%s://%s:%d%s", scheme, host, conf.Port, conf.MetricPath)
 
+	kubernetesToken := ""
+	if conf.UseKubernetesAuth {
+		kubeConfig, err := rest.InClusterConfig()
+		if err != nil {
+			return err
+		}
+		kubernetesToken = kubeConfig.BearerToken
+	}
+
 	var ctx context.Context
 	ctx, m.cancel = context.WithCancel(context.Background())
 	utils.RunOnInterval(ctx, func() {
-		dps, err := fetchPrometheusMetrics(m.client, url, conf.Username, conf.Password)
+		dps, err := fetchPrometheusMetrics(m.client, url, conf.Username, conf.Password, kubernetesToken)
 		if err != nil {
 			logger.WithError(err).Error("Could not get prometheus metrics")
 			return
@@ -124,8 +139,8 @@ func (m *Monitor) Configure(conf *Config) error {
 	return nil
 }
 
-func fetchPrometheusMetrics(client *http.Client, url, username, password string) ([]*datapoint.Datapoint, error) {
-	metricFamilies, err := doFetch(client, url, username, password)
+func fetchPrometheusMetrics(client *http.Client, url, username, password string, kubernetesToken string) ([]*datapoint.Datapoint, error) {
+	metricFamilies, err := doFetch(client, url, username, password, kubernetesToken)
 	if err != nil {
 		return nil, err
 	}
@@ -137,11 +152,15 @@ func fetchPrometheusMetrics(client *http.Client, url, username, password string)
 	return dps, nil
 }
 
-func doFetch(client *http.Client, url, username, password string) ([]*dto.MetricFamily, error) {
+func doFetch(client *http.Client, url, username, password string, kubernetesToken string) ([]*dto.MetricFamily, error) {
 	// Prometheus 2.0 deprecated protobuf and now only does the text format.
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if kubernetesToken != "" {
+		req.Header.Set("Authorization", "Bearer "+kubernetesToken)
 	}
 
 	if username != "" {
