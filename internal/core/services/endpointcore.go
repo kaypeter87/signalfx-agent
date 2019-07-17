@@ -84,6 +84,8 @@ func (e *EndpointCore) DerivedFields() map[string]interface{} {
 
 // ExtraConfig returns a map of values to be considered when configuring a monitor
 func (e *EndpointCore) ExtraConfig() (map[string]interface{}, error) {
+	// TODO: if e.Port or host is 0 don't merge in.
+	// only allow it to be overriden if the value is 0
 	return utils.MergeInterfaceMaps(
 		map[string]interface{}{
 			"host": e.Host,
